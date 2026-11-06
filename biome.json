@@ -27,5 +27,8 @@
     "indentStyle": "space",
     "indentWidth": 2
   },
-  "plugins": ["@aliou/biome-plugins/presets/recommended"]
+  "plugins": [
+    "@aliou/biome-plugins/presets/recommended",
+    "@aliou/biome-plugins/presets/strict"
+  ]
 }

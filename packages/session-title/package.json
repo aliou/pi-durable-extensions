@@ -1,0 +1,45 @@
+{
+  "name": "@aliou/pi-durable-session-title",
+  "version": "0.0.0",
+  "description": "Generate durable conversation titles with a background naming agent",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aliou/pi-durable-extensions",
+    "directory": "packages/session-title"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "check": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0"
+  },
+  "devDependencies": {
+    "@golevelup/ts-vitest": "^4.0.1",
+    "vitest": "^5.1.0"
+  }
+}
