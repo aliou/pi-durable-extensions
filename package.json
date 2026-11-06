@@ -1,0 +1,31 @@
+{
+  "name": "@aliou/pi-durable-extensions-workspace",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aliou/pi-durable-extensions"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "@aliou/biome-plugins": "^0.16.0",
+    "@biomejs/biome": "^2.6.5",
+    "@types/node": "^25.0.10",
+    "lefthook": "^1.11.0",
+    "tsdown": "^0.23.5",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r check",
+    "test": "pnpm -r test",
+    "lint": "biome check",
+    "format": "biome check --write",
+    "prepare": "lefthook install"
+  },
+  "packageManager": "pnpm@11.28.10"
+}
