@@ -1,64 +1,47 @@
 # @aliou/pi-durable-session-title
 
-Generates a short title after a conversation's first successful answer. A background task runs a separate naming conversation whose only model-callable tool is `set_title`. The transcript, model request, tool call, and title state use pi-durable's normal recovery.
+Generate a durable conversation title after the first successful agent answer. Read the latest title or follow changes through `SessionTitleDoc`.
 
 ## Usage
 
-Requires Node 24+ and pi-durable 1.5.0.
+Install the package in a pi-durable Harness registry. The host supplies models, providers, and credentials.
 
-```sh
-pnpm add @aliou/pi-durable-session-title @earendil-works/pi-durable@1.5.0 @earendil-works/pi-ai@1.5.0 @earendil-works/chord@1.5.0
+```ts
+import {
+  createSessionTitleExtension,
+  SessionTitleDoc,
+} from "@aliou/pi-durable-session-title";
+
+registry.install(createSessionTitleExtension());
 ```
 
-```js
-import { SessionTitle, SessionTitleDoc } from "@aliou/pi-durable-session-title";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
+The naming conversation uses the source conversation's model. Pass `{ model }` to select a different titling model.
 
-const registry = createRegistry();
-registry.install(SessionTitle);
-const harness = await Harness.open(storage, { models, registry }, context);
-const root = await harness.root(context, {
-  agent: { model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } },
-});
-
-await (await root.submit({ type: "input", content: "Fix the login timeout" }, context)).wait(context);
-const state = await harness.snapshot(SessionTitleDoc, root.id, context);
+```ts
+const state = await harness.snapshot(SessionTitleDoc, conversation.id, context);
 console.log(state?.title);
+
+const watch = await harness.watchDoc(SessionTitleDoc, conversation.id, context);
+if (watch !== undefined) {
+  console.log(watch.value.title);
+  watch.start(async (call) => {
+    if (call.kind === "value") console.log(call.value.title);
+  });
+}
 ```
 
-The submission can finish before the background title task. Watch `SessionTitleDoc` or poll `harness.snapshot()` when the host needs to wait for the title.
+The document must exist before attaching a watch. Scheduling creates it. Hosts that need a watch before the first answer can create it with `tx.doc(SessionTitleDoc, conversation.id)` in their conversation-creation transaction.
 
-Use the conversation model by default, or configure a different naming model:
+## Behavior
 
-```js
-import { createSessionTitleExtension } from "@aliou/pi-durable-session-title";
+- `SessionTitleState` contains `{ title: string | null, activeTaskId: TaskId | null }`.
+- The title stays visible while a replacement is generated. Only the active task may change it.
+- A background task owns a separate naming conversation with one embedded-transcript user message and only the `set_title` tool.
+- The transcript includes recent user and assistant text in chronological order, selected backward within an 8,000-character budget and a 100-entry window. XML metacharacters are escaped. Tool output, thinking, and non-text content are excluded.
+- Titles contain non-whitespace text and at most 80 characters after trimming.
+- The extension submits one naming request with a stable task-derived request ID. It uses the host's generation defaults and does not choose fallback models.
+- Failures preserve the title and record a failed task outcome. The naming conversation and submission remain available for inspection. No announcement or error is added to the source transcript.
+- Automatic scheduling runs only after the first successful agent answer. Later answers do not trigger generation, including after a naming failure. The task flow supports replacing an existing title without changing this scheduling policy.
+- Recovery reuses the task-owned naming conversation and its submission. The document keeps only its latest value and starts empty on forks.
 
-registry.install(createSessionTitleExtension({
-  model: { provider: "anthropic", modelId: "claude-haiku-4-5" },
-}));
-```
-
-If the configured naming model fails, the extension retries once with the conversation model. Other failed naming attempts leave the state idle and retry after the next successful main answer.
-
-## Naming instructions
-
-Use `systemPrompt` to replace the default naming instructions. Use `appendSystemPrompt` to add instructions after the default prompt or after a replacement supplied in `systemPrompt`.
-
-```js
-registry.install(createSessionTitleExtension({
-  appendSystemPrompt: "Use sentence case and include the project name when it is clear.",
-}));
-```
-
-## Manual titles
-
-Call `setSessionTitle()` when the user names a conversation. Manual titles prevent automatic generation and win races with an in-flight naming task.
-
-```js
-import { setSessionTitle } from "@aliou/pi-durable-session-title";
-
-await setSessionTitle(root, "Login reliability", context);
-```
-
-Titles must contain non-whitespace text and fit within 80 characters after trimming. `SessionTitleDoc` records the title, its generated or manual source, generation status, current task, and attempt count. It starts empty on a fork.
+Consumers can combine the title with their own execution state or stored transcripts. This extension does not report protocols, search, or index conversations.

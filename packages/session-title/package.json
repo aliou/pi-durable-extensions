@@ -39,7 +39,6 @@
     "@earendil-works/pi-schema": "1.5.0"
   },
   "devDependencies": {
-    "@golevelup/ts-vitest": "^4.0.1",
     "vitest": "^5.1.0"
   }
 }

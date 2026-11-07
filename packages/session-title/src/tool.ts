@@ -5,48 +5,47 @@ import {
 } from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
 import { GENERATE_TITLE_TASK_NAME } from "./names";
+import { TitleResultDoc } from "./result";
 import { SessionTitleDoc } from "./state";
-import { Title } from "./title";
+import { parseTitle, Title } from "./title";
 
 async function titleTarget(tx: Tx, api: ToolExecutionApi) {
-  const child = await tx.conversation(api.conversationId);
-  const ownerTaskId = child?.owner?.taskId;
-  if (ownerTaskId === undefined) {
+  const naming = await tx.conversation(api.conversationId);
+  if (naming?.owner === undefined)
     throw new Error("The naming conversation has no owning task");
-  }
-  const owner = await tx.task(ownerTaskId);
-  if (owner?.kind !== GENERATE_TITLE_TASK_NAME) {
+  const task = await tx.task(naming.owner.taskId);
+  if (task?.kind !== GENERATE_TITLE_TASK_NAME)
     throw new Error("The naming conversation has no title task");
-  }
-  return { conversationId: owner.conversationId, taskId: owner.id };
+  return task;
 }
 
 export const SetTitleTool = defineTool({
   name: "set_title",
-  description: "Set the current conversation title",
+  description: "Store a concise title for the source conversation",
   parameters: obj({ title: Title }),
   deferred: true,
   executionMode: "sequential",
   replay: "safe",
   execute: async (args, api, context) => {
-    const title = args.title.trim();
+    const title = parseTitle(args.title);
     let stored = false;
     await api.commit(async (tx) => {
-      const target = await titleTarget(tx, api);
-      const state = await tx.doc(SessionTitleDoc, target.conversationId);
-      if (state.status !== "pending" || state.taskId !== target.taskId) return;
-      state.status = "ready";
+      const task = await titleTarget(tx, api);
+      const state = await tx.doc(SessionTitleDoc, task.conversationId);
+      const result = await tx.doc(TitleResultDoc, task.id);
+      if (result.stored) {
+        stored = true;
+        return;
+      }
+      if (state.activeTaskId !== task.id) return;
       state.title = title;
-      state.source = "generated";
-      state.taskId = null;
+      state.activeTaskId = null;
+      result.stored = true;
       stored = true;
     }, context);
     return {
       output: [
-        {
-          type: "text",
-          text: stored ? `Session title: ${title}` : "Session title unchanged",
-        },
+        { type: "text", text: stored ? "Title stored" : "Title unchanged" },
       ],
       details: { title, stored },
       control: { terminate: true },

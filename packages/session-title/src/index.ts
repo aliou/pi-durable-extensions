@@ -1,41 +1,57 @@
-import { contentText } from "@earendil-works/pi-ai";
+import type { Context } from "@earendil-works/chord/context";
 import {
   AssistantEntry,
+  type Cursor,
   defineExtension,
+  type EntryId,
   GenerationTask,
+  type HookApi,
   hook,
   type ModelRef,
   runEndTask,
-  UserEntry,
 } from "@earendil-works/pi-durable";
-import { SESSION_TITLE_EXTENSION_NAME } from "./names";
-import { buildTitlePrompt, SESSION_TITLE_SYSTEM_PROMPT } from "./prompt";
-import { SessionTitleDoc } from "./state";
+import {
+  SESSION_TITLE_EXTENSION_NAME,
+  SESSION_TITLE_REQUEST_KIND,
+} from "./names";
+import { buildTitlePrompt } from "./prompt";
 import { createSessionTitleTasks } from "./tasks";
 import { SetTitleTool } from "./tool";
 
-export {
-  SessionTitleDoc,
-  type SessionTitleState,
-  setSessionTitle,
-} from "./state";
+export { SessionTitleDoc, type SessionTitleState } from "./state";
 
-export type SessionTitleOptions = {
-  model?: ModelRef;
-  systemPrompt?: string;
-  appendSystemPrompt?: string;
-};
+async function hasPriorAnswer(api: HookApi, answer: EntryId, context: Context) {
+  let cursor: Cursor | undefined;
+  do {
+    const page = await api.entries(
+      { maxEntryId: answer, order: "descending" },
+      100,
+      cursor,
+      context,
+    );
+    if (
+      page.items.some(
+        (entry) =>
+          entry.id !== answer &&
+          entry.kind === AssistantEntry.kind &&
+          entry.model?.some(
+            (message) =>
+              message.role === "assistant" && message.stopReason === "stop",
+          ),
+      )
+    )
+      return true;
+    cursor = page.next;
+  } while (cursor !== undefined);
+  return false;
+}
 
-export function createSessionTitleExtension(options: SessionTitleOptions = {}) {
-  const systemPrompt = options.systemPrompt ?? SESSION_TITLE_SYSTEM_PROMPT;
-  const instructions =
-    options.appendSystemPrompt === undefined
-      ? systemPrompt
-      : `${systemPrompt}\n\n${options.appendSystemPrompt}`;
-  const { LaunchTitleTask, GenerateTitleTask } = createSessionTitleTasks({
-    model: options.model ?? null,
-    instructions,
-  });
+export function createSessionTitleExtension(
+  options: { model?: ModelRef } = {},
+) {
+  const { LaunchTitleTask, GenerateTitleTask } = createSessionTitleTasks(
+    options.model ?? null,
+  );
   return defineExtension({
     name: SESSION_TITLE_EXTENSION_NAME,
     tools: [SetTitleTool],
@@ -44,29 +60,19 @@ export function createSessionTitleExtension(options: SessionTitleOptions = {}) {
       hook(GenerationTask, {
         afterRun: async (run, api, context) => {
           if (run.reason !== "answer") return;
-          const state = await api.snapshot(
-            SessionTitleDoc,
-            api.conversationId,
+          const first = await api.entry(run.first, context);
+          if (first?.kind === SESSION_TITLE_REQUEST_KIND) return;
+          if (await hasPriorAnswer(api, run.answer, context)) return;
+          const recent = await api.entries(
+            { maxEntryId: run.answer, order: "descending" },
+            100,
+            undefined,
             context,
           );
-          if (state !== undefined && state.status !== "idle") return;
-          const user = await api.entry(UserEntry, run.first, context);
-          const answer = await api.entry(AssistantEntry, run.answer, context);
-          const userMessage = user?.model?.[0];
-          const assistantMessage = answer?.model?.[0];
-          if (
-            userMessage?.role !== "user" ||
-            assistantMessage?.role !== "assistant"
-          ) {
-            return;
-          }
-          const userText = contentText(userMessage.content).trim();
-          const answerText = contentText(assistantMessage.content).trim();
-          if (userText === "" || answerText === "") return;
           return {
             tasks: [
               runEndTask(LaunchTitleTask, {
-                prompt: buildTitlePrompt(userText, answerText),
+                prompt: buildTitlePrompt(recent.items),
               }),
             ],
           };
@@ -75,5 +81,3 @@ export function createSessionTitleExtension(options: SessionTitleOptions = {}) {
     ],
   });
 }
-
-export const SessionTitle = createSessionTitleExtension();

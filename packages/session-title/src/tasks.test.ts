@@ -1,175 +1,152 @@
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { ConversationId, TaskId, Tx } from "@earendil-works/pi-durable";
-import { createMock } from "@golevelup/ts-vitest";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import type { SessionTitleState } from "./state";
-import { createSessionTitleTasks } from "./tasks";
+import {
+  gate,
+  idle,
+  launch,
+  openHarness,
+  state,
+  tasks,
+  titleCall,
+} from "./testing";
 
-const conversationId = createMock<ConversationId>();
-const taskId = createMock<TaskId<null>>();
-const otherTaskId = createMock<TaskId<null>>();
-const model = { provider: "faux", modelId: "small" };
-const { GenerateTitleTask, LaunchTitleTask } = createSessionTitleTasks({
-  model,
-  instructions: "Name this conversation",
-});
-
-type LaunchTask = Parameters<
-  typeof LaunchTitleTask.definition.phases.launch
->[0];
-type LaunchRuntime = Parameters<
-  typeof LaunchTitleTask.definition.phases.launch
->[1];
-type GenerateTask = Parameters<typeof GenerateTitleTask.definition.abort>[0];
-type GenerateRuntime = Parameters<typeof GenerateTitleTask.definition.abort>[1];
-
-function createTransaction(state: SessionTitleState) {
-  const outcomes: unknown[] = [];
-  const tx = createMock<Tx>(
-    {
-      doc: async () => state,
-      createTask: async () => otherTaskId,
-    },
-    { strict: true },
-  );
-  return { outcomes, tx };
-}
-
-function createLaunchRuntime(state: SessionTitleState) {
-  const { outcomes, tx } = createTransaction(state);
-  const runtime = createMock<LaunchRuntime>(
-    {
-      conversationId,
-      taskId,
-      commit: async (change) => {
-        const outcome = await change(tx, createMock<LaunchTask>());
-        outcomes.push(outcome);
-      },
-    },
-    { strict: true },
-  );
-  return { outcomes, runtime, tx };
-}
-
-function createGenerateRuntime(state: SessionTitleState) {
-  const { outcomes, tx } = createTransaction(state);
-  const runtime = createMock<GenerateRuntime>(
-    {
-      conversationId,
-      taskId,
-      commit: async (change) => {
-        const outcome = await change(tx, createMock<GenerateTask>());
-        outcomes.push(outcome);
-      },
-    },
-    { strict: true },
-  );
-  return { outcomes, runtime };
-}
-
-function pendingState(
-  overrides: Partial<SessionTitleState> = {},
-): SessionTitleState {
-  return {
-    status: "pending",
-    title: null,
-    source: null,
-    taskId,
-    attempts: 1,
-    ...overrides,
-  };
-}
-
-describe("createSessionTitleTasks", () => {
-  describe("LaunchTitleTask", () => {
-    it("starts generation and marks the title pending", async () => {
-      const state = pendingState({
-        status: "idle",
-        taskId: null,
-        attempts: 0,
+describe("title generation tasks", () => {
+  it("accepts only the first title when the model calls the tool twice", async () => {
+    const opened = await openHarness([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("set_title", { title: "First title" }, { id: "first" }),
+          fauxToolCall(
+            "set_title",
+            { title: "Second title" },
+            { id: "second" },
+          ),
+        ],
+        { stopReason: "toolUse" },
+      ),
+    ]);
+    try {
+      await launch(opened);
+      await idle(opened);
+      await expect(state(opened)).resolves.toEqual({
+        title: "First title",
+        activeTaskId: null,
       });
-      const { outcomes, runtime, tx } = createLaunchRuntime(state);
-      const task = createMock<LaunchTask>(
-        {
-          id: taskId,
-          input: { prompt: "Name this conversation" },
-        },
-        { strict: true },
-      );
-
-      await LaunchTitleTask.definition.phases.launch(task, runtime, context);
-
-      expect(tx.createTask).toHaveBeenCalledWith(
-        GenerateTitleTask,
-        { prompt: "Name this conversation", model },
-        {
-          ownership: { kind: "conversation" },
-          conversationId,
-          background: true,
-        },
-      );
-      expect(state).toEqual({
-        status: "pending",
-        title: null,
-        source: null,
-        taskId: otherTaskId,
-        attempts: 1,
-      });
-      expect(outcomes).toEqual([
-        { status: "terminal", outcome: { status: "completed", result: null } },
-      ]);
-    });
-
-    it.each([
-      ["pending", pendingState()],
-      [
-        "ready",
-        pendingState({
-          status: "ready",
-          title: "Manual title",
-          source: "manual",
-          taskId: null,
-        }),
-      ],
-    ])(
-      "does not start generation while the title is %s",
-      async (_case, state) => {
-        const before = { ...state };
-        const { runtime, tx } = createLaunchRuntime(state);
-        const task = createMock<LaunchTask>(
-          {
-            id: taskId,
-            input: { prompt: "Name this conversation" },
-          },
-          { strict: true },
-        );
-
-        await LaunchTitleTask.definition.phases.launch(task, runtime, context);
-
-        expect(tx.createTask).not.toHaveBeenCalled();
-        expect(state).toEqual(before);
-      },
-    );
+      expect(opened.faux.state.callCount).toBe(1);
+    } finally {
+      await opened.harness.close(context);
+    }
   });
 
-  describe("GenerateTitleTask", () => {
-    it("makes a pending title retryable when aborted", async () => {
-      const state = pendingState();
-      const { outcomes, runtime } = createGenerateRuntime(state);
-      const task = createMock<GenerateTask>({ id: taskId }, { strict: true });
-
-      await GenerateTitleTask.definition.abort(task, runtime, context);
-
-      expect(state).toEqual({
-        status: "idle",
-        title: null,
-        source: null,
-        taskId: null,
-        attempts: 1,
+  it("an older result cannot overwrite a completed replacement", async () => {
+    const older = gate();
+    const opened = await openHarness([
+      async () => {
+        await older.promise;
+        return titleCall("Stale title");
+      },
+      titleCall("Replacement title"),
+    ]);
+    try {
+      await launch(opened);
+      await expect.poll(() => opened.faux.state.callCount).toBe(1);
+      await launch(opened);
+      await expect
+        .poll(() => state(opened))
+        .toMatchObject({ title: "Replacement title" });
+      older.resolve();
+      await idle(opened);
+      await expect(state(opened)).resolves.toEqual({
+        title: "Replacement title",
+        activeTaskId: null,
       });
-      expect(outcomes).toEqual([
-        { status: "terminal", outcome: { status: "aborted" } },
-      ]);
-    });
+    } finally {
+      older.resolve();
+      await opened.harness.close(context);
+    }
   });
+
+  it("keeps the title visible while generating and preserves it on failure", async () => {
+    const held = gate();
+    const opened = await openHarness([
+      titleCall("Existing title"),
+      async () => {
+        await held.promise;
+        return fauxAssistantMessage("", {
+          stopReason: "error",
+          errorMessage: "Naming failed",
+        });
+      },
+    ]);
+    try {
+      await launch(opened);
+      await idle(opened);
+      await launch(opened);
+      await expect.poll(() => opened.faux.state.callCount).toBe(2);
+      await expect(state(opened)).resolves.toEqual({
+        title: "Existing title",
+        activeTaskId: expect.any(Number),
+      });
+      held.resolve();
+      await idle(opened);
+      await expect(state(opened)).resolves.toEqual({
+        title: "Existing title",
+        activeTaskId: null,
+      });
+      const generated = await tasks(opened);
+      expect(generated[1]?.state).toMatchObject({
+        status: "terminal",
+        outcome: { status: "failed", error: { detail: "Naming failed" } },
+      });
+    } finally {
+      held.resolve();
+      await opened.harness.close(context);
+    }
+  });
+
+  it.each(["success", "failure"])(
+    "a superseded %s cannot overwrite or clear a newer task",
+    async (outcome) => {
+      const older = gate();
+      const newer = gate();
+      const opened = await openHarness([
+        async () => {
+          await older.promise;
+          return outcome === "success"
+            ? titleCall("Stale title")
+            : fauxAssistantMessage("No tool call");
+        },
+        async () => {
+          await newer.promise;
+          return titleCall("Current title");
+        },
+      ]);
+      try {
+        await launch(opened);
+        await expect.poll(() => opened.faux.state.callCount).toBe(1);
+        await launch(opened);
+        await expect.poll(() => opened.faux.state.callCount).toBe(2);
+        const current = await state(opened);
+        older.resolve();
+        await expect
+          .poll(async () => {
+            const generated = await tasks(opened);
+            return generated[0]?.state.status;
+          })
+          .toBe("terminal");
+        await expect(state(opened)).resolves.toEqual(current);
+        newer.resolve();
+        await idle(opened);
+        await expect(state(opened)).resolves.toEqual({
+          title: "Current title",
+          activeTaskId: null,
+        });
+      } finally {
+        older.resolve();
+        newer.resolve();
+        await opened.harness.close(context);
+      }
+    },
+  );
 });

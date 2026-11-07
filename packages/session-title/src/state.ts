@@ -1,46 +1,23 @@
-import type { Context } from "@earendil-works/chord/context";
-import {
-  type Conversation,
-  defineDoc,
-  type TaskId,
-} from "@earendil-works/pi-durable";
-import { parseTitle } from "./title";
+import { defineDoc, type TaskId } from "@earendil-works/pi-durable";
+import { compile, nullable, str } from "@earendil-works/pi-schema";
 
 export type SessionTitleState = {
-  status: "idle" | "pending" | "ready";
   title: string | null;
-  source: "generated" | "manual" | null;
-  taskId: TaskId | null;
-  attempts: number;
+  activeTaskId: TaskId | null;
 };
+
+const isStoredTitle = compile(nullable(str())).check;
 
 export const SessionTitleDoc = defineDoc<SessionTitleState>({
   kind: "session-title.state",
-  version: 1,
+  version: 2,
   scope: "conversation",
   history: "latest",
   fork: "initial",
-  initial: () => ({
-    status: "idle",
-    title: null,
-    source: null,
-    taskId: null,
-    attempts: 0,
-  }),
+  initial: () => ({ title: null, activeTaskId: null }),
+  migrate: (value) => {
+    if (!isStoredTitle(value.title)) throw new Error("Invalid stored title");
+    return { title: value.title, activeTaskId: null };
+  },
   checkpointWhen: () => false,
 });
-
-export async function setSessionTitle(
-  conversation: Conversation,
-  title: string,
-  context: Context,
-): Promise<void> {
-  const parsed = parseTitle(title);
-  await conversation.commit(async (tx) => {
-    const state = await tx.doc(SessionTitleDoc, conversation.id);
-    state.status = "ready";
-    state.title = parsed;
-    state.source = "manual";
-    state.taskId = null;
-  }, context);
-}
