@@ -33,11 +33,11 @@
     "prepack": "pnpm build"
   },
   "dependencies": {
-    "@earendil-works/chord": "1.5.0",
-    "@earendil-works/pi-durable": "1.5.0"
+    "@earendil-works/chord": "1.5.1",
+    "@earendil-works/pi-durable": "1.5.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.1",
     "@golevelup/ts-vitest": "^4.0.1",
     "memfs": "^4.80.0",
     "vitest": "^5.1.0"
